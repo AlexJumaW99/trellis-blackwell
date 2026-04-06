@@ -369,7 +369,7 @@ def bake_texture(
             return torch.nn.functional.l1_loss(texture[:, :-1, :, :], texture[:, 1:, :, :]) + \
                    torch.nn.functional.l1_loss(texture[:, :, :-1, :], texture[:, :, 1:, :])
     
-        total_steps = 2500
+        total_steps = 5000
         with tqdm(total=total_steps, disable=not verbose, desc='Texture baking (opt): optimizing') as pbar:
             for step in range(total_steps):
                 optimizer.zero_grad()
@@ -440,7 +440,7 @@ def to_glb(
     vertices, faces, uvs = parametrize_mesh(vertices, faces)
 
     # bake texture
-    observations, extrinsics, intrinsics = render_multiview(app_rep, resolution=1024, nviews=100)
+    observations, extrinsics, intrinsics = render_multiview(app_rep, resolution=1024, nviews=200)
     masks = [np.any(observation > 0, axis=-1) for observation in observations]
     extrinsics = [extrinsics[i].cpu().numpy() for i in range(len(extrinsics))]
     intrinsics = [intrinsics[i].cpu().numpy() for i in range(len(intrinsics))]
@@ -481,7 +481,7 @@ def simplify_gs(
         return gs
     
     # simplify
-    observations, extrinsics, intrinsics = render_multiview(gs, resolution=1024, nviews=100)
+    observations, extrinsics, intrinsics = render_multiview(gs, resolution=1024, nviews=200)
     observations = [torch.tensor(obs / 255.0).float().cuda().permute(2, 0, 1) for obs in observations]
     
     # Following https://arxiv.org/pdf/2411.06019
