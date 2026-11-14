@@ -1,6 +1,6 @@
 # 🏗️ TRELLIS on RTX 5070 Ti (Blackwell) — Complete Guide
 
-> **Tested on:** Pop!_OS 24.04 · RTX 5070 Ti (sm_120) · Driver 580.x · PyTorch Nightly cu128  
+> **Tested on:** Pop!_OS 24.04 · RTX 5070 Ti (sm_120) · Driver 580.x · Docker image: PyTorch 2.11.0+cu128, xformers 0.0.35  
 > **Model:** TRELLIS-image-large (1.2B params) — the best available TRELLIS v1 model
 
 ---
@@ -56,34 +56,34 @@
 | Component | Detail |
 |-----------|--------|
 | GPU | RTX 5070 Ti (16GB VRAM, Blackwell sm_120) |
-| PyTorch | Nightly cu128 (stable doesn't support sm_120 yet) |
-| Attention | xformers (flash-attn kernels don't support sm_120) |
-| DINOv2 | Patched to use PyTorch native SDPA instead of xformers |
-| Kaolin | Replaced with no-op stub (only used for tensor validation) |
-| Memory | `expandable_segments:True` required to fit in 16GB |
+| PyTorch | 2.11.0+cu128 (stable; sm_120 is supported since PyTorch 2.7) |
+| Attention | xformers 0.0.35 (`ATTN_BACKEND=xformers`; flash-attn is not used) |
+| DINOv2 | `XFORMERS_DISABLED=1` makes it use PyTorch's native SDPA |
+| Kaolin | Not installed; the FlexiCubes import falls back to a no-op (it's only a tensor shape check) |
+| Memory | `expandable_segments:True` reduces fragmentation on 16GB |
 
 ---
 
 ## 🐳 Quick Start (Docker)
 
 ```bash
-# Clone the Docker setup
-git clone <your-repo> trellis-blackwell
+git clone --recurse-submodules https://github.com/AlexJumaW99/trellis-blackwell.git
 cd trellis-blackwell
+mkdir -p inputs outputs ~/.cache/huggingface ~/.cache/torch ~/.u2net
 
-# Optional: set HF token for faster downloads
-export HF_TOKEN=hf_your_token_here
+# Build, then run the web demo at http://localhost:7860
+docker compose build
+docker compose up
 
-# Build and run
-docker compose up --build
-
-# Access at http://localhost:7860
+# Or generate from one image without the web UI
+docker compose run --rm trellis python example_hq.py --image inputs/my_object.png --preset high --output outputs/my_object
 ```
+
+The image is built from this repository's code. The Dockerfile and `docker-compose.yml` are in the repository root; see the root README for details.
 
 **Rebuild from scratch:**
 ```bash
 docker compose build --no-cache
-docker compose up -d
 ```
 
 ---

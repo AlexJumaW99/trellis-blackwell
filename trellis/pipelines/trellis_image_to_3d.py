@@ -1,5 +1,6 @@
 from typing import *
 from contextlib import contextmanager
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -65,8 +66,41 @@ class TrellisImageTo3DPipeline(Pipeline):
 
         new_pipeline._init_image_cond_model(args['image_cond_model'])
 
+        new_pipeline.low_vram = os.environ.get('TRELLIS_LOW_VRAM', '0') == '1'
+
         return new_pipeline
-    
+
+    # ------------------------------------------------------------------
+    # Low-VRAM mode (TRELLIS_LOW_VRAM=1): weights stay on the CPU and each
+    # stage moves only the model(s) it uses to the GPU, then back.
+    # ------------------------------------------------------------------
+    low_vram = False
+
+    @property
+    def device(self) -> torch.device:
+        if self.low_vram:
+            return torch.device('cuda')
+        return super().device
+
+    def to(self, device: torch.device) -> None:
+        if self.low_vram and torch.device(device).type == 'cuda':
+            return  # models are moved per stage instead
+        super().to(device)
+
+    @contextmanager
+    def _on_gpu(self, *names: str):
+        if not self.low_vram:
+            yield
+            return
+        for name in names:
+            self.models[name].to('cuda')
+        try:
+            yield
+        finally:
+            for name in names:
+                self.models[name].to('cpu')
+            torch.cuda.empty_cache()
+
     def _init_image_cond_model(self, name: str):
         """
         Initialize the image conditioning model.
@@ -138,7 +172,8 @@ class TrellisImageTo3DPipeline(Pipeline):
             raise ValueError(f"Unsupported type of image: {type(image)}")
         
         image = self.image_cond_model_transform(image).to(self.device)
-        features = self.models['image_cond_model'](image, is_training=True)['x_prenorm']
+        with self._on_gpu('image_cond_model'):
+            features = self.models['image_cond_model'](image, is_training=True)['x_prenorm']
         patchtokens = F.layer_norm(features, features.shape[-1:])
         return patchtokens
         
@@ -178,17 +213,19 @@ class TrellisImageTo3DPipeline(Pipeline):
         reso = flow_model.resolution
         noise = torch.randn(num_samples, flow_model.in_channels, reso, reso, reso).to(self.device)
         sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
-        z_s = self.sparse_structure_sampler.sample(
-            flow_model,
-            noise,
-            **cond,
-            **sampler_params,
-            verbose=True
-        ).samples
-        
+        with self._on_gpu('sparse_structure_flow_model'):
+            z_s = self.sparse_structure_sampler.sample(
+                flow_model,
+                noise,
+                **cond,
+                **sampler_params,
+                verbose=True
+            ).samples
+
         # Decode occupancy latent
         decoder = self.models['sparse_structure_decoder']
-        coords = torch.argwhere(decoder(z_s)>0)[:, [0, 2, 3, 4]].int()
+        with self._on_gpu('sparse_structure_decoder'):
+            coords = torch.argwhere(decoder(z_s)>0)[:, [0, 2, 3, 4]].int()
 
         return coords
 
@@ -209,11 +246,14 @@ class TrellisImageTo3DPipeline(Pipeline):
         """
         ret = {}
         if 'mesh' in formats:
-            ret['mesh'] = self.models['slat_decoder_mesh'](slat)
+            with self._on_gpu('slat_decoder_mesh'):
+                ret['mesh'] = self.models['slat_decoder_mesh'](slat)
         if 'gaussian' in formats:
-            ret['gaussian'] = self.models['slat_decoder_gs'](slat)
+            with self._on_gpu('slat_decoder_gs'):
+                ret['gaussian'] = self.models['slat_decoder_gs'](slat)
         if 'radiance_field' in formats:
-            ret['radiance_field'] = self.models['slat_decoder_rf'](slat)
+            with self._on_gpu('slat_decoder_rf'):
+                ret['radiance_field'] = self.models['slat_decoder_rf'](slat)
         return ret
     
     def sample_slat(
@@ -237,13 +277,14 @@ class TrellisImageTo3DPipeline(Pipeline):
             coords=coords,
         )
         sampler_params = {**self.slat_sampler_params, **sampler_params}
-        slat = self.slat_sampler.sample(
-            flow_model,
-            noise,
-            **cond,
-            **sampler_params,
-            verbose=True
-        ).samples
+        with self._on_gpu('slat_flow_model'):
+            slat = self.slat_sampler.sample(
+                flow_model,
+                noise,
+                **cond,
+                **sampler_params,
+                verbose=True
+            ).samples
 
         std = torch.tensor(self.slat_normalization['std'])[None].to(slat.device)
         mean = torch.tensor(self.slat_normalization['mean'])[None].to(slat.device)

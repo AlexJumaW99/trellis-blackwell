@@ -23,6 +23,8 @@ import argparse
 os.environ.setdefault('ATTN_BACKEND', 'xformers')
 os.environ.setdefault('SPCONV_ALGO', 'native')
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# Keep weights on the CPU and move each model to the GPU only for its stage (set to 0 on 24 GB+ cards)
+os.environ.setdefault('TRELLIS_LOW_VRAM', '1')
 
 import torch
 import imageio
@@ -74,10 +76,10 @@ def free_pipeline_vram(pipeline):
 
 
 def reload_pipeline(pipeline):
-    """Move all pipeline models back to GPU."""
-    for name, model in pipeline.models.items():
-        model.cuda()
-        print(f"  [RELOAD] {name} -> GPU")
+    """Move all pipeline models back to GPU (no-op in low-VRAM mode, which moves them per stage)."""
+    pipeline.cuda()
+    if not pipeline.low_vram:
+        print("  [RELOAD] models -> GPU")
 
 
 def generate_single(pipeline, image_path, preset_name, seed, output_prefix):

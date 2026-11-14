@@ -17,6 +17,8 @@ import time
 os.environ.setdefault('ATTN_BACKEND', 'xformers')
 os.environ.setdefault('SPCONV_ALGO', 'native')
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# Keep weights on the CPU and move each model to the GPU only for its stage (set to 0 on 24 GB+ cards)
+os.environ.setdefault('TRELLIS_LOW_VRAM', '1')
 
 import torch
 import imageio
@@ -76,8 +78,7 @@ def process_image(pipeline, image_path, output_dir, preset, seed):
     # Clean and reload
     torch.cuda.empty_cache()
     gc.collect()
-    for model in pipeline.models.values():
-        model.cuda()
+    pipeline.cuda()  # no-op in low-VRAM mode
 
     elapsed = time.time() - start
     print(f"  Done: {name} ({elapsed:.1f}s) -> {prefix}.glb")

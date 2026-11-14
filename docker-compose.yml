@@ -1,0 +1,25 @@
+services:
+  trellis:
+    build: .
+    image: trellis-blackwell:latest
+    # Run as your own user so files written to the mounted folders belong to you
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./inputs:/app/inputs
+      - ./outputs:/app/outputs
+      # Reuse the model caches on your machine (TRELLIS weights, DINOv2, rembg's u2net)
+      - ${HOME}/.cache/huggingface:/cache/huggingface
+      - ${HOME}/.cache/torch:/cache/torch
+      - ${HOME}/.u2net:/cache/u2net
+    shm_size: "8g"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

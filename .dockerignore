@@ -1,0 +1,9 @@
+.git
+**/__pycache__
+*.pyc
+outputs/
+inputs/
+tmp/
+*.mp4
+*.glb
+*.ply

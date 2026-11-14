@@ -1,3 +1,83 @@
+# TRELLIS on NVIDIA Blackwell (RTX 50-series, sm_120)
+
+This fork of [microsoft/TRELLIS](https://github.com/microsoft/TRELLIS) runs TRELLIS image-to-3D on RTX 50-series GPUs. It adds:
+
+- **A Docker image that builds on sm_120.** Stable PyTorch 2.11.0 + CUDA 12.8, xformers 0.0.35, and nvdiffrast / diffoctreerast / diff-gaussian-rasterization compiled for sm_120 from pinned commits. No nightly builds, no flash-attn.
+- **Low-VRAM mode (`TRELLIS_LOW_VRAM=1`, on by default in the Docker image)**: model weights stay in system RAM, and each stage (DINOv2, the two flow models, each decoder) moves to the GPU only while it runs. Texture baking keeps its per-view images in system RAM too. This leaves room on a 16 GB card that's also driving your desktop.
+- **`example_hq.py`**: quality presets (`fast`, `balanced`, `high`, `max`) for one image or several views of one object.
+- **`batch_generate.py`**: converts a folder of images to `.glb` / `.ply` with the same presets.
+- **Higher-quality texture baking**: 200 views and 5000 optimisation steps (upstream: 100 and 2500) in `trellis/utils/postprocessing_utils.py`.
+
+### Tested
+
+RTX 5070 Ti (16 GB), driver 580, Pop!_OS 24.04, with the desktop (4K) holding ~7 GB of VRAM throughout:
+
+| Run | Result |
+|---|---|
+| `example_hq.py --preset high` (25 + 25 steps, 2048 px texture), `typical_creature_dragon.png` | ✅ 105 s end to end: 3 preview videos, `.glb` (20k vertices, 2048 px texture), `.ply` |
+| Same run without low-VRAM mode | ❌ out of memory during sampling |
+| Gradio web demo (`docker compose up`) | ✅ serves on http://localhost:7860 |
+
+Peak GPU memory for the whole card, desktop included, was 10.6–14.4 GB across four runs. On a 24 GB+ card you can turn low-VRAM mode off (`-e TRELLIS_LOW_VRAM=0`) to skip the CPU↔GPU copies.
+
+## Quick start (Docker)
+
+You need an NVIDIA driver that supports CUDA 12.8 (570 or newer) and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+```bash
+git clone --recurse-submodules https://github.com/AlexJumaW99/trellis-blackwell.git
+cd trellis-blackwell
+mkdir -p inputs outputs ~/.cache/huggingface ~/.cache/torch ~/.u2net   # create the mounted folders as your own user
+docker compose build
+```
+
+**Web demo** (Gradio, at http://localhost:7860):
+
+```bash
+docker compose up
+```
+
+**One image to a GLB** (put the image in `inputs/`):
+
+```bash
+docker compose run --rm trellis python example_hq.py --image inputs/my_object.png --preset high --output outputs/my_object
+```
+
+**A whole folder:**
+
+```bash
+docker compose run --rm trellis python batch_generate.py --input_dir inputs --output_dir outputs --preset balanced
+```
+
+On first use, the model weights are downloaded into your own `~/.cache/huggingface`, `~/.cache/torch` and `~/.u2net`, which are mounted into the container, so they're shared with any other TRELLIS install and only downloaded once.
+
+## Presets (`example_hq.py`, `batch_generate.py`)
+
+| Preset | Sampling steps (both stages) | Mesh simplify | Texture |
+|---|---|---|---|
+| `fast` | 12 | 0.95 | 1024 px |
+| `balanced` | 20 | 0.93 | 1024 px |
+| `high` (default) | 25 | 0.90 | 2048 px |
+| `max` | 50 | 0.85 | 2048 px |
+
+## What's different from upstream, and why
+
+| Change | Reason |
+|---|---|
+| PyTorch 2.11.0+cu128, pinned | sm_120 needs CUDA 12.8 builds of PyTorch, available in stable releases since 2.7 |
+| `ATTN_BACKEND=xformers` | flash-attn isn't used. xformers 0.0.35 has prebuilt cu128 wheels |
+| `XFORMERS_DISABLED=1` | Makes DINOv2 (the image encoder) use PyTorch's own attention instead of xformers. It's DINOv2's own switch and doesn't affect TRELLIS's `ATTN_BACKEND` |
+| No Kaolin | FlexiCubes imports Kaolin only for `check_tensor`, a debug shape check, and Kaolin has no wheels for this PyTorch. The Dockerfile makes that import optional |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Reduces fragmentation, which matters at 16 GB |
+| `TRELLIS_LOW_VRAM=1` | Per-stage model placement (`trellis/pipelines/trellis_image_to_3d.py`) and CPU-side view storage for texture baking (`trellis/utils/postprocessing_utils.py`). Both are off unless the variable is set |
+| Gradio stack pinned (`huggingface_hub` 0.36.2, `pydantic` 2.10.6, `fastapi` 0.115.6) | Upstream's `gradio==4.44.1` breaks with newer versions of these |
+| `GRADIO_SERVER_NAME=0.0.0.0` | Without it the web demo only listens inside the container |
+
+A longer write-up (inference examples, input tips, troubleshooting) is in [user_guide+docker_setup/TRELLIS_USER_GUIDE.md](user_guide+docker_setup/TRELLIS_USER_GUIDE.md).
+
+The original TRELLIS README follows. TRELLIS is © Microsoft, MIT licensed (see [LICENSE](LICENSE)).
+
+---
 <img src="assets/logo.webp" width="100%" align="center">
 <h1 align="center">Structured 3D Latents<br>for Scalable and Versatile 3D Generation</h1>
 <p align="center"><a href="https://arxiv.org/abs/2412.01506"><img src='https://img.shields.io/badge/arXiv-Paper-red?logo=arxiv&logoColor=white' alt='arXiv'></a>

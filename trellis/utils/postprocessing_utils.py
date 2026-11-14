@@ -1,4 +1,5 @@
 from typing import *
+import os
 import numpy as np
 import torch
 import utils3d
@@ -309,8 +310,12 @@ def bake_texture(
     vertices = torch.tensor(vertices).cuda()
     faces = torch.tensor(faces.astype(np.int32)).cuda()
     uvs = torch.tensor(uvs).cuda()
-    observations = [torch.tensor(obs / 255.0).float().cuda() for obs in observations]
-    masks = [torch.tensor(m>0).bool().cuda() for m in masks]
+    # TRELLIS_LOW_VRAM=1: keep the per-view images and UV maps (~39 MB per 1024px view) on the CPU
+    # and copy only the view in use to the GPU. With 200 views that saves ~7.8 GB of VRAM.
+    low_vram = os.environ.get('TRELLIS_LOW_VRAM', '0') == '1'
+    store = 'cpu' if low_vram else 'cuda'
+    observations = [torch.tensor(obs / 255.0).float().to(store) for obs in observations]
+    masks = [torch.tensor(m>0).bool().to(store) for m in masks]
     views = [utils3d.torch.extrinsics_to_view(torch.tensor(extr).cuda()) for extr in extrinsics]
     projections = [utils3d.torch.intrinsics_to_perspective(torch.tensor(intr).cuda(), near, far) for intr in intrinsics]
 
@@ -324,11 +329,11 @@ def bake_texture(
                     rastctx, vertices[None], faces, observation.shape[1], observation.shape[0], uv=uvs[None], view=view, projection=projection
                 )
                 uv_map = rast['uv'][0].detach().flip(0)
-                mask = rast['mask'][0].detach().bool() & masks[0]
-            
+                mask = rast['mask'][0].detach().bool() & masks[0].cuda()
+
             # nearest neighbor interpolation
             uv_map = (uv_map * texture_size).floor().long()
-            obs = observation[mask]
+            obs = observation.cuda()[mask]
             uv_map = uv_map[mask]
             idx = uv_map[:, 0] + (texture_size - uv_map[:, 1] - 1) * texture_size
             texture = texture.scatter_add(0, idx.view(-1, 1).expand(-1, 3), obs)
@@ -353,8 +358,8 @@ def bake_texture(
                 rast = utils3d.torch.rasterize_triangle_faces(
                     rastctx, vertices[None], faces, observation.shape[1], observation.shape[0], uv=uvs[None], view=view, projection=projection
                 )
-                _uv.append(rast['uv'].detach())
-                _uv_dr.append(rast['uv_dr'].detach())
+                _uv.append(rast['uv'].detach().to(store))
+                _uv_dr.append(rast['uv_dr'].detach().to(store))
 
         texture = torch.nn.Parameter(torch.zeros((1, texture_size, texture_size, 3), dtype=torch.float32).cuda())
         optimizer = torch.optim.Adam([texture], betas=(0.5, 0.9), lr=1e-2)
@@ -374,7 +379,7 @@ def bake_texture(
             for step in range(total_steps):
                 optimizer.zero_grad()
                 selected = np.random.randint(0, len(views))
-                uv, uv_dr, observation, mask = _uv[selected], _uv_dr[selected], observations[selected], masks[selected]
+                uv, uv_dr, observation, mask = (t.cuda(non_blocking=True) for t in (_uv[selected], _uv_dr[selected], observations[selected], masks[selected]))
                 render = dr.texture(texture, uv, uv_dr)[0]
                 loss = torch.nn.functional.l1_loss(render[mask], observation[mask])
                 if lambda_tv > 0:
